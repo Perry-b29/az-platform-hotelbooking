@@ -1,0 +1,75 @@
+---
+applyTo: '**/*.bicep,**/*.bicepparam,**/infra/**,**/infrastructure/**'
+description: 'Passwordless identity wiring for the workshop workload — managed identities, anonymous GHCR image pulls, SQL Entra admin, and the no-secrets contract. Use when designing or implementing any Bicep that touches identity, Azure SQL, or Container Apps.'
+---
+
+# Workload identity & passwordless access
+
+These rules make the workshop workload run **without a single secret** in parameters,
+outputs, or app configuration. They apply to every Bicep file, parameter file, and design
+doc for the workload spoke. They complement — not replace —
+[azure-verified-modules-bicep](azure-verified-modules-bicep.instructions.md) and
+[workload-network-exposure](workload-network-exposure.instructions.md).
+
+The non-negotiable outcome: **identity is the only credential**. If you find yourself adding
+a SQL password, container registry credentials, a connection-string secret, or a Key Vault
+round-trip just to authenticate a first-party Azure service to another, stop — you have taken
+a wrong turn.
+
+## Managed identities
+
+- Use **user-assigned managed identities (UAMI)**. Do not rely on system-assigned identities
+  for cross-resource grants, because the role assignment must exist before the consuming
+  resource is created and a system-assigned principal id isn't known until then.
+- Keep **runtime** and **deploy/CI** identities separate. A runtime identity on a container
+  app must not be able to redeploy infrastructure; a CI identity must not have the app's
+  data-plane rights. (CI identity scoping lives in
+  [github-oidc-federation](github-oidc-federation.instructions.md).)
+
+## Pulling public images from GHCR
+
+The backend and frontend container images are published as public GHCR packages. Container
+apps pull them anonymously; do not configure image-pull credentials, registry-specific role
+assignments, or `registries[]` entries for these images. The image workflow authenticates to
+GHCR with its repository-scoped `GITHUB_TOKEN` and `packages: write`; it does not use an Azure
+deploy identity. The packages must be configured as public in GHCR because the workflow does
+not change package visibility.
+
+## Azure SQL: managed identity is the Entra admin
+
+- The **backend container app's managed identity is the SQL server's Microsoft Entra admin**,
+  set **declaratively** on the AVM `sql/server` `administrator` parameter. No
+  `az sql server ad-admin create`, no `deploymentScripts`, no jumpbox. Schema/seed creation
+  runs on first app startup as that admin.
+- **Microsoft Entra-only authentication is enabled** (`azureADOnlyAuthentication: true`).
+- `publicNetworkAccess` is `Disabled`; SQL is reachable only through its private endpoint.
+
+The three failure modes to get right in the `administrator` block (all silent until deploy or
+runtime):
+
+| Property | Correct value | Wrong value that looks right |
+| --- | --- | --- |
+| `principalType` | `Application` (required for a user-assigned MI) | `User` |
+| `sid` | the MI's **`principalId`** | the MI's `clientId` or `resourceId` |
+| `azureADOnlyAuthentication` | `true` | omitted (leaves SQL auth enabled) |
+
+The deploying principal is **not** the data-plane admin and does not need data-plane access —
+SQL is private and the MI owns the schema.
+
+## Passwordless connection string
+
+- Build the connection string **from resource properties at deploy time** and authenticate
+  with the managed identity — e.g. `Authentication=Active Directory Default`, `Encrypt=True`,
+  server FQDN from the SQL module output. No password, no secret reference.
+- When several identities could be in scope, pass the intended UAMI's **`clientId`** as an
+  environment variable (e.g. `AZURE_CLIENT_ID`) so the runtime credential picks the right one.
+
+## No secrets — hard rule
+
+- No secrets in `param`/`output`/`var`, no secrets in container app `env`, no admin
+  credentials, no SQL logins. If a value is sensitive, the design is wrong — switch to an
+  identity-based path.
+- A production landing zone would typically make an Entra **group** the SQL admin and grant
+  the app MI a contained DB user with least privilege. Collapsing both into one MI is a
+  documented **workshop simplification** — note the trade-off in the design; don't change the
+  workshop path.

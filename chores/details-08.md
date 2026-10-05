@@ -1,0 +1,40 @@
+# Chore 8 — Staged infra deploy workflow
+
+### Background
+
+Every change to the Bicep under `infra/` should flow through CI, not be deployed from a laptop. The platform team wants a **staged pipeline**: lint, then auto-deploy to **test**, then wait for a human to approve **prod**. Same shape a real landing zone uses — test as the safety net, prod gated by a reviewer.
+
+### Hints
+
+Workflow shape:
+
+| Stage | Job           | Runs on                    | Purpose |
+| ----- | ------------- | -------------------------- | ------- |
+| 1     | `lint`        | every trigger              | `az bicep build` + `az bicep lint` against `infra/**`. No Azure login. |
+| 2     | `deploy-test` | `needs: lint`, env `test`   | OIDC login, `what-if` + `az deployment group create` for the complete workload template (spoke + peering, Container Apps environment, container apps, Azure SQL, managed identities, private endpoints + Private DNS) against `rg-workload-01-test`. Auto-approved. |
+| 3     | `deploy-prod` | `needs: deploy-test`, env `prod` | Same template with `main.prod.bicepparam` against `rg-workload-01-prod`. **Blocks on required reviewer.** |
+
+Each environment deployment must include the complete workload infrastructure so the app can reach SQL through the private network. The public app images are pulled from GHCR and require no shared Azure registry.
+
+OIDC details (everything below was provisioned in a previous chore — this chore just consumes it):
+
+- `azure/login@v2` with `client-id: ${{ vars.AZURE_CLIENT_ID }}` / `tenant-id: ${{ vars.AZURE_TENANT_ID }}` / `subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}`, `permissions: id-token: write`.
+- **No long-lived secrets** in repo or org secrets.
+- One **user-assigned managed identity per environment** (the workload's GitHub deploy identity), each with a federated credential whose subject is `repo:<owner>/<repo>:environment:<env>`.
+
+GitHub Environments do the gating, not workflow logic (also already configured):
+
+- `test`: no protection rules. Variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP=rg-workload-01-test`.
+- `prod`: **required reviewers** (at least one human), optional wait timer. Same four variables pointing at the prod deploy identity and `rg-workload-01-prod`.
+
+Two `bicepparam` files (`main.test.bicepparam`, `main.prod.bicepparam`) are the **only** thing that differs between the per-env stages. The workload template is identical.
+
+Every deploy job runs `what-if` first and writes the output to `$GITHUB_STEP_SUMMARY` so the prod reviewer sees what they're approving.
+
+### Outcome
+
+First end-to-end run: test deploys without prompting; prod sits in **Waiting** on the Actions tab until you approve. After approval, the same commit's prod deploy uses the exact templates and params verified in test — no drift.
+
+### Workshop scope note
+
+You only have one subscription, so test and prod are different **resource groups** in the same subscription. The federated credentials and the workflow are still split per environment so the muscle memory matches a real multi-subscription landing zone — when you later have separate test and prod subscriptions, only `AZURE_SUBSCRIPTION_ID` changes.
