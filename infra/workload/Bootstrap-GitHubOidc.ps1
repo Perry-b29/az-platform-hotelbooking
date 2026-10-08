@@ -39,6 +39,8 @@ param(
     [ValidateSet('ResourceGroup', 'Vnet')]
     [string]$HubScope = 'ResourceGroup',
     [string]$Location = 'polandcentral',
+    [ValidateSet('Id', 'Name')]
+    [string]$SubjectFormat = 'Id',
     [string]$RepoOwner,
     [string]$RepoName
 )
@@ -84,6 +86,31 @@ if (-not $RepoOwner -or -not $RepoName) {
     if (-not $RepoName) { $RepoName = $Matches.name }
 }
 $repo = "$RepoOwner/$RepoName"
+
+# GitHub sends owner and repository IDs in the OIDC subject by default for newer repositories, and it ignored a
+# name-based template on this repository. The default is the stable choice, so the credential is registered with
+# the subject GitHub actually sends. -SubjectFormat Name registers the name-based subject instead.
+$repoInfo = Get-GhJson -Arguments @('api', "repos/$repo")
+if (-not $repoInfo) { throw "Cannot read repository $repo. Check gh auth status." }
+$subjectBase = if ($SubjectFormat -eq 'Id') { "repo:$RepoOwner@$($repoInfo.owner.id)/$RepoName@$($repoInfo.id)" } else { "repo:$RepoOwner/$RepoName" }
+
+$subjectTemplate = Get-GhJson -Arguments @('api', "repos/$repo/actions/oidc/customization/sub")
+if ($SubjectFormat -eq 'Id') { $templateBody = @{ use_default = $true } } else { $templateBody = @{ use_default = $false; include_claim_keys = @('repo', 'context') } }
+$templateCurrent = $false
+if ($subjectTemplate) {
+    if ($SubjectFormat -eq 'Id') { $templateCurrent = [bool]$subjectTemplate.use_default }
+    else { $templateCurrent = (-not $subjectTemplate.use_default) -and ((@($subjectTemplate.include_claim_keys) -join ',') -eq 'repo,context') }
+}
+if (-not $templateCurrent) {
+    if ($PSCmdlet.ShouldProcess($repo, "Set the OIDC subject claim template for the $SubjectFormat format")) {
+        ($templateBody | ConvertTo-Json -Compress) | & gh api --method PUT "repos/$repo/actions/oidc/customization/sub" --input - | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not set the OIDC subject claim template for $repo." }
+        Write-Host "OIDC subject claim template set for the $SubjectFormat format"
+    }
+}
+else {
+    Write-Host 'OIDC subject claim template up to date'
+}
 
 Write-Host "Repository: $repo" -ForegroundColor Cyan
 Write-Host 'Using subscription:' -ForegroundColor Cyan
@@ -149,7 +176,7 @@ $summary = foreach ($environmentName in $Environments) {
         }
 
         # The subject is generated from variables, never typed.
-        $subject = "repo:$RepoOwner/$RepoName`:environment:$environmentName"
+        $subject = "$subjectBase`:environment:$environmentName"
         $credentialName = "github-$environmentName"
         $credentials = @(Get-AzJson -Arguments @('identity', 'federated-credential', 'list', '--resource-group', $resourceGroup, '--identity-name', $identityName))
         $others = @($credentials | Where-Object { $_ -and $_.name -ne $credentialName })
@@ -217,7 +244,7 @@ $summary = foreach ($environmentName in $Environments) {
         }
     }
 
-    [pscustomobject]@{ Environment = $environmentName; Identity = $identityName; ResourceGroup = $resourceGroup; Subject = "repo:$RepoOwner/$RepoName`:environment:$environmentName" }
+    [pscustomobject]@{ Environment = $environmentName; Identity = $identityName; ResourceGroup = $resourceGroup; Subject = "$subjectBase`:environment:$environmentName" }
 }
 
 Write-Host "`nSummary" -ForegroundColor Green
