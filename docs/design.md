@@ -236,7 +236,7 @@ Alle nieuwe workloadresources, inclusief MI's en distributed Private DNS, komen 
 | Private DNS | `privatelink.database.windows.net` | Workload-RG; zone group op SQL PE; links naar spoke en hub, auto-registration=false |
 | API-runtime-UAMI | `id-hotelapi-<env>-polandcentral-001` | SQL Entra admin; geen Azure beheerrollen |
 | Frontend-runtime-UAMI | `id-hotelweb-<env>-polandcentral-001` | Geen SQL- of beheerrechten; gescheiden van API en CI |
-| GitHub Actions deploy-UAMI | `id-github-hotelbooking-test-swedencentral-001` | Dedicated CI/CD-identiteit voor de omgeving `test`; scope in sectie 7 |
+| GitHub Actions deploy-UAMI | `id-github-hotelbooking-test-polandcentral-001` (test), `id-github-hotelbooking-prod-polandcentral-001` (prod) | Dedicated CI/CD-identiteit per omgeving; aangemaakt met `Bootstrap-GitHubOidc.ps1`; scope in sectie 7 |
 | Log Analytics | `log-hotelbooking-<env>-polandcentral-001` | Public ingestion/query, PerGB2018, retentie 30 dagen |
 | Application Insights | `appi-hotelbooking-<env>-polandcentral-001` | Workspace-based; public ingestion/query; gekoppeld aan genoemde workspace |
 
@@ -303,7 +303,7 @@ De bestaande nginx heeft een default upstream-timeout en geen runtime-DNS-resolv
 
 Runtime- en deploy-UAMI's zijn gescheiden. Frontend krijgt geen SQL-rechten. De API krijgt geen Contributor/Owner op Azure-resources; SQL-beheer is uitsluitend via de Entra-adminconfiguratie.
 
-De dedicated GitHub Actions-identiteit voor `test` (`id-github-hotelbooking-test-swedencentral-001`) krijgt:
+De dedicated GitHub Actions-identiteit per omgeving (`id-github-hotelbooking-test-polandcentral-001` en `id-github-hotelbooking-prod-polandcentral-001`) krijgt:
 
 - Contributor op `rg-hotelbooking-test-swedencentral-001`.
 - Network Contributor op `rg-platform` (de hub-resourcegroep), conform het netwerkcontract voor nested AVM-deployments en VNet-peering/DNS-linkvalidatie. **Bewuste afwijking van een formulering als "alleen op de hub-VNet":** de AVM-module maakt de peering aan de hubkant via een geneste deployment in de hub-resourcegroep. Die vraagt `Microsoft.Resources/deployments/write` op resourcegroepniveau en faalt als de rol alleen op de VNet staat. Dit is breder dan alleen de hub-VNet; pipelinebeleid mag die rechten niet gebruiken om de bestaande hub te wijzigen of te verwijderen.
