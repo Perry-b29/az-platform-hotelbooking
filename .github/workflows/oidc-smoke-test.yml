@@ -1,0 +1,40 @@
+name: OIDC smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment to log in with
+        type: choice
+        options:
+          - test
+          - prod
+        default: test
+
+permissions:
+  contents: read
+
+jobs:
+  login:
+    name: Log in to Azure (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    # The environment selects the federated credential; prod waits for a required reviewer.
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Log in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Show the signed-in identity
+        run: az account show --query "{subscription:name, user:user.name, type:user.type}" --output table
+
+      - name: Read the workload resource group
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: az group show --name "$RESOURCE_GROUP" --query "{name:name, location:location}" --output table
